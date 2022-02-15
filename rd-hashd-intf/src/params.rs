@@ -72,6 +72,7 @@ const PARAMS_DOC: &str = "\
 //  acc_dist_slots: Access distribution report slots - 0 disables
 //  lat_pid: PID controller parameters for latency convergence
 //  rps_pid: PID controller parameters for RPS convergence
+//  anon_histogram:
 //
 ";
 
@@ -106,6 +107,7 @@ pub struct Params {
     pub acc_dist_slots: usize,
     pub lat_pid: PidParams,
     pub rps_pid: PidParams,
+    pub anon_histogram: Vec<u64>,
 }
 
 impl Params {
@@ -158,6 +160,7 @@ impl Default for Params {
                 ki: 0.01,
                 kd: 0.01,
             },
+            anon_histogram: Vec::new(),
         }
     }
 }

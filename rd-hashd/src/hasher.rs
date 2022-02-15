@@ -7,7 +7,7 @@ use pid::Pid;
 use quantiles::ckms::CKMS;
 use rand::rngs::SmallRng;
 use rand::SeedableRng;
-use rand_distr::{Distribution, Normal, Uniform};
+use rand_distr::{Distribution, Normal, Uniform, WeightedIndex};
 use sha1::{Digest, Sha1};
 use std::convert::TryInto;
 use std::fs::OpenOptions;
@@ -133,7 +133,7 @@ impl Hasher {
     }
 }
 
-/// Normal distribution with clamps. The portion of the distribution which is
+// Normal distribution with clamps. The portion of the distribution which is
 /// cut off by the clamps uniformly raise the distribution within the clamps
 /// such that it gradually transforms into uniform distribution as stdev
 /// increases.
@@ -162,6 +162,62 @@ impl ClampedNormal {
         } else {
             return self.uniform.sample(rng);
         }
+    }
+}
+
+pub trait PageSampler {
+    fn sample_random_page_index<R: rand::Rng + ?Sized>(
+        &self,
+        rng: &mut R,
+        chunk_pages: usize,
+        aa_size: usize,
+        anon_addr_frac: f64,
+    ) -> usize;
+}
+
+struct HistogramDistribution<'a> {
+    histogram_samples: &'a Vec<u64>,
+    weighed_index: WeightedIndex<u64>,
+}
+
+impl<'a> HistogramDistribution<'a> {
+    fn new(histogram_samples: &'a Vec<u64>) -> Self {
+        Self {
+            histogram_samples,
+            weighed_index: WeightedIndex::new(histogram_samples).unwrap(),
+        }
+    }
+
+    fn sample<R: rand::Rng + ?Sized>(&self, rng: &mut R) -> usize {
+        // List of 0,1,2,3,4 one for each histogram bar
+        let choices: Vec<usize> = (0..self.histogram_samples.len()).collect();
+        //https://docs.rs/rand/0.6.5/rand/distributions/struct.WeightedIndex.html
+        return choices[self.weighed_index.sample(rng)];
+    }
+}
+
+impl<'a> PageSampler for HistogramDistribution<'a> {
+    fn sample_random_page_index<R: rand::Rng + ?Sized>(
+        &self,
+        rng: &mut R,
+        _chunk_pages: usize,
+        _aa_size: usize,
+        _anon_addr_frac: f64,
+    ) -> usize {
+        return self.sample(rng);
+    }
+}
+
+impl PageSampler for ClampedNormal {
+    fn sample_random_page_index<R: rand::Rng + ?Sized>(
+        &self,
+        rng: &mut R,
+        chunk_pages: usize,
+        aa_size: usize,
+        anon_addr_frac: f64,
+    ) -> usize {
+        let rel = self.sample(rng) * anon_addr_frac;
+        return AnonArea::rel_to_page_idx(rel, aa_size - (chunk_pages - 1) * *PAGE_SIZE);
     }
 }
 
@@ -290,27 +346,16 @@ impl HasherThread {
 
         // Generate anonymous accesses.
         let aa = self.anon_area.read().unwrap();
-        let anon_addr_normal = ClampedNormal::new(0.0, self.anon_addr_stdev_ratio, -1.0, 1.0);
-
-        for _ in 0..self.anon_nr_chunks {
-            let rel = anon_addr_normal.sample(&mut rng) * self.anon_addr_frac;
-            let page_base =
-                AnonArea::rel_to_page_idx(rel, aa.size() - (self.chunk_pages - 1) * *PAGE_SIZE);
-            let is_write =
-                self.anon_write_frac != 0.0 && rw_uniform.sample(&mut rng) <= self.anon_write_frac;
-
-            for page_idx in page_base..page_base + self.chunk_pages {
-                let page: &mut [u64] = aa.access_page(page_idx);
-                if page[0] == 0 {
-                    aa.fill_page_with_random(page_idx);
-                }
-                if is_write {
-                    page[0] = page[0].wrapping_add(1).max(1);
-                }
-                rdh.append(aa.access_page(page_idx))
-            }
-            Self::anon_dist_count(&mut anon_dist, page_base, self.chunk_pages, &aa);
+        let use_histogram = false;
+        if use_histogram {
+            let vec = vec![1 as u64, (aa.size() / *PAGE_SIZE - 1) as u64];
+            let hist = HistogramDistribution::new(&vec);
+            self.perform_anon_accesses(&mut rng, &hist, &mut anon_dist, &mut rdh);
+        } else {
+            let anon_addr_normal = ClampedNormal::new(0.0, self.anon_addr_stdev_ratio, -1.0, 1.0);
+            self.perform_anon_accesses(&mut rng, &anon_addr_normal, &mut anon_dist, &mut rdh);
         }
+
         sleep(Duration::from_secs_f64(self.sleep_dur / 3.0));
 
         // Calculate sha1 and signal completion.
@@ -325,6 +370,40 @@ impl HasherThread {
                 anon_dist,
             })
             .unwrap();
+    }
+
+    fn perform_anon_accesses<R: rand::Rng + ?Sized>(
+        &self,
+        rng: &mut R,
+        distribution: &impl PageSampler,
+        anon_dist : &mut Vec::<u64>,
+        rdh: &mut Hasher,
+    ) {
+        let rw_uniform = Uniform::new_inclusive(0.0, 1.0);
+        let aa = self.anon_area.read().unwrap();
+        for _ in 0..self.anon_nr_chunks {
+            let page_base = distribution.sample_random_page_index(
+                rng,
+                self.chunk_pages,
+                aa.size(),
+                self.anon_addr_frac,
+            );
+
+            let is_write =
+                self.anon_write_frac != 0.0 && rw_uniform.sample(rng) <= self.anon_write_frac;
+
+            for page_idx in page_base..page_base + self.chunk_pages {
+                let page: &mut [u64] = aa.access_page(page_idx);
+                if page[0] == 0 {
+                    aa.fill_page_with_random(page_idx);
+                }
+                if is_write {
+                    page[0] = page[0].wrapping_add(1).max(1);
+                }
+                rdh.append(aa.access_page(page_idx))
+            }
+            Self::anon_dist_count(anon_dist, page_base, self.chunk_pages, &aa);
+        }
     }
 }
 
