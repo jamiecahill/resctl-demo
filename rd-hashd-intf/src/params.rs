@@ -34,8 +34,11 @@ const PARAMS_DOC: &str = "\
 // online. However, the portion which is actively used by rd-hashd can be
 // scaled down with `file_total_frac`.
 //
-// Anonymous memory total and access sizes are configured as proportions to
+// Anonymous memory accesses can be specified in two different ways:
+// 1) Anonymous memory total and access sizes can be configured as to be proportional to
 // file access sizes.
+// 2) A histogram from which the memory access pattern will be sampled from can be
+// passed in.
 //
 // The total footprint for file accesses is scaled between
 // `file_addr_rps_base_frac` and 1.0 linearly if the current RPS is lower than
@@ -59,11 +62,14 @@ const PARAMS_DOC: &str = "\
 //  file_addr_stdev_ratio: Standard deviation of file access addresses
 //  file_addr_rps_base_frac: Memory scaling starting point for file accesses
 //  file_write_frac: The proportion of writes in file accesses
-//  anon_size_ratio: Anon access size average - 1.0 means equal as file accesses
-//  anon_size_stdev_ratio: Standard deviation of anon access sizes
-//  anon_addr_stdev_ratio: Standard deviation of anon access addresses
+//  anon_size_ratio: Anon access size average - 1.0 means equal as file accesses (ignored if anon_hisogram is provided)
+//  anon_size_stdev_ratio: Standard deviation of anon access sizes (ignored if anon_hisogram is provided)
+//  anon_addr_stdev_ratio: Standard deviation of anon access addresses (ignored if anon_hisogram is provided)
 //  anon_addr_rps_base_frac: Memory scaling starting point for anon accesses
 //  anon_write_frac: The proportion of writes in anon accesses
+//  anon_histogram: List of ints where the index of each element represents
+//    a memory access chunk (see chunk_pages) and the value is the weight
+//    which determines how frequently that chunk is accessed
 //  sleep_mean: Worker sleep duration average
 //  sleep_stdev_ratio: Standard deviation of sleep duration distribution
 //  cpu_ratio: CPU usage scaling - 1.0 hashes the same number of bytes as accessed
@@ -72,7 +78,6 @@ const PARAMS_DOC: &str = "\
 //  acc_dist_slots: Access distribution report slots - 0 disables
 //  lat_pid: PID controller parameters for latency convergence
 //  rps_pid: PID controller parameters for RPS convergence
-//  anon_histogram:
 //
 ";
 

@@ -253,6 +253,7 @@ struct HasherThread {
     anon_addr_stdev_ratio: f64,
     anon_addr_frac: f64,
     anon_write_frac: f64,
+    anon_histogram: Vec<u64>,
 
     sleep_dur: f64,
     cpu_ratio: f64,
@@ -345,11 +346,8 @@ impl HasherThread {
         sleep(Duration::from_secs_f64(self.sleep_dur / 3.0));
 
         // Generate anonymous accesses.
-        let aa = self.anon_area.read().unwrap();
-        let use_histogram = false;
-        if use_histogram {
-            let vec = vec![1 as u64, (aa.size() / *PAGE_SIZE - 1) as u64];
-            let hist = HistogramDistribution::new(&vec);
+        if !self.anon_histogram.is_empty() {
+            let hist = HistogramDistribution::new(&self.anon_histogram);
             self.perform_anon_accesses(&mut rng, &hist, &mut anon_dist, &mut rdh);
         } else {
             let anon_addr_normal = ClampedNormal::new(0.0, self.anon_addr_stdev_ratio, -1.0, 1.0);
@@ -376,7 +374,7 @@ impl HasherThread {
         &self,
         rng: &mut R,
         distribution: &impl PageSampler,
-        anon_dist : &mut Vec::<u64>,
+        anon_dist: &mut Vec<u64>,
         rdh: &mut Hasher,
     ) {
         let rw_uniform = Uniform::new_inclusive(0.0, 1.0);
@@ -680,6 +678,7 @@ impl DispatchThread {
                 anon_addr_stdev_ratio: self.params.anon_addr_stdev_ratio,
                 anon_addr_frac: self.anon_addr_frac,
                 anon_write_frac: self.params.anon_write_frac,
+                anon_histogram: self.params.anon_histogram.clone(),
 
                 sleep_dur: self.sleep_normal.sample(&mut rng),
                 cpu_ratio: self.params.cpu_ratio,
